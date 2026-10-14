@@ -205,26 +205,54 @@ To resume, `Engine.resume(run_id, approval_id, decision)` or the streamed
 > identity used when the approval was created (for the engine API, via
 > `caller_session_id` / `X-Session-ID`). Omitting or changing it returns 403.
 
+> **Upgrade note:** Runs suspended before checkpointed model/tool steps existed
+> cannot be resumed; they fail and their approval is rejected. Decide or cancel
+> pending approvals before upgrading. See
+> [`ADR 0005`](adr/0005-checkpointed-hitl-continuation.md).
+
 1. **Atomically claims** the approval (`PENDING → RESUMING`) — exactly one caller
    wins (see §7).
 2. Moves the run through `RESUMING → RUNNING` and resumes the **same** LangGraph
    thread from its checkpoint via
-   `Command(resume={"decision": ...})`. The graph is not restarted, the agent is
-   not re-selected, and intent/planning are not re-run.
-3. The node re-executes, the coordinator interprets the typed decision, and:
+   `Command(resume={"decision": ..., "approval_id": ..., "tool_call_id": ...})`.
+   The graph is not restarted, the agent is not re-selected, and intent/planning
+   are not re-run.
+3. The node re-executes, restoring its checkpointed model responses and completed
+   tool outcomes instead of regenerating them. The gate checks that the resume's
+   `approval_id` and stable `tool_call_id` match the invocation it is about to
+   run; a missing or different binding aborts the run as `FAILED` and rejects
+   the approval. Otherwise the coordinator interprets the typed decision, and:
    - `ALLOW_ONCE` / `ALLOW_FOR_SESSION` → the original tool call executes and its
      result flows back to the agent (and `ALLOW_FOR_SESSION` records a session
      permission);
    - `DENY` → a structured `[denied]` result is returned and **no** tool/MCP call
      is made.
 
+The claimed decision takes precedence over auto mode and session grants for that
+one pending invocation. A grant added by another run, or an auto-mode change
+after rebuilding the engine, cannot bypass a pending denial. A request-local
+binding validates the first unfinished tool step before policy evaluation and
+is consumed only by the matching approval interrupt. Later calls use the normal
+policy; completed steps are restored without consuming this new decision. If a
+rebuilt graph removes or blocks the pending invocation before it reaches that
+interrupt, the unconsumed binding fails the run and rejects the claimed approval.
+
 An unrecognized or missing resume decision **fails closed to `DENY`**, so an
 ambiguous resume never triggers a side effect.
 
-Because a LangGraph node re-executes from its start on resume, tool *preparation*
-is deterministic and safe to repeat, and all non-idempotent execution happens
-**after** the interrupt returns. Duplicate execution on re-entry is prevented by
-the idempotency ledger (§7).
+A LangGraph node re-executes from its start on resume, but each model response
+and each completed leaf-tool outcome is a checkpointed LangGraph task. Replay
+returns those saved values, so the model cannot propose a different call than
+the one reviewed, and earlier tools, decisions, and session grants are not
+repeated. Restored steps must match the node, its input, and the invocation
+identity; otherwise the run fails with `CheckpointReplayMismatch`. Runs suspended
+before this format existed fail closed on resume. Duplicate execution of a call
+that started but did not finish is still prevented by the idempotency ledger
+(§7).
+
+Because the reviewed call must execute exactly as proposed, the checkpoint holds
+the model's raw tool arguments and the tool results; only the `ApprovalRecord`
+and the approval payload are masked. Treat the checkpoint store as sensitive.
 
 Identifiers are kept strictly separate:
 

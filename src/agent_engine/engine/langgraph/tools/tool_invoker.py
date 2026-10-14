@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.tools import BaseTool
+from langgraph.func import task
 
 from agent_engine.approvals.coordinator import ApprovalCoordinator
 from agent_engine.approvals.invocation import ToolInvocation
@@ -29,6 +30,8 @@ from agent_engine.approvals.tool_execution_manager import (
     execution_id_for,
 )
 from agent_engine.core.spec import AgentSpec
+from agent_engine.engine.langgraph.checkpointing import CheckpointReplayMismatch, in_graph_run
+from agent_engine.engine.langgraph.execution.approval_resume import current_approval_resume
 from agent_engine.engine.langgraph.tools.agent_tool_binding import AgentToolBinding
 from agent_engine.engine.langgraph.tools.tool_gate import DenyTool, ExecuteTool, ToolGate
 from agent_engine.engine.langgraph.tools.tool_result_normalizer import (
@@ -157,7 +160,25 @@ class ToolInvoker:
         if blocked is not None:
             return NormalizedToolResult.text_only(blocked)
 
-        gate = await self._gate_tool_call(call)
+        if in_graph_run():
+            # Count every logical call on replay, but restore completed outcomes
+            # without repeating approval decisions, grants, hooks, or providers.
+            @task
+            async def tool_step() -> tuple[str, dict[str, object]]:
+                result = await self._gate_and_execute(call)
+                return call.tool_call_id, result.to_persisted()
+
+            restored_id, result = await tool_step()
+            if restored_id != call.tool_call_id:
+                raise CheckpointReplayMismatch(self._node_path)
+            return NormalizedToolResult.from_persisted(result)
+
+        return await self._gate_and_execute(call)
+
+    async def _gate_and_execute(self, call: _ToolCall) -> NormalizedToolResult:
+        binding = current_approval_resume.get()
+        approval_id = binding.for_invocation(call.tool_call_id) if binding is not None else None
+        gate = await self._gate_tool_call(call, approval_id=approval_id)
         if isinstance(gate, DenyTool):
             await self._usage.record_denied(call.identity)
             return NormalizedToolResult.text_only(gate.message)
@@ -419,7 +440,7 @@ class ToolInvoker:
             **fields,
         )
 
-    async def _gate_tool_call(self, call: _ToolCall) -> ToolGate:
+    async def _gate_tool_call(self, call: _ToolCall, *, approval_id: str | None = None) -> ToolGate:
         """Run the call through the approval coordinator.
 
         Returns :class:`ExecuteTool` when the tool may run (auto mode, an existing
@@ -446,7 +467,6 @@ class ToolInvoker:
             if run_context
             else None
         )
-        approval_id_value = run_context.metadata.get("approval_id") if run_context else None
         invocation = ToolInvocation(
             tool_call_id=call.tool_call_id,
             agent_id=self._spec.id,
@@ -459,7 +479,7 @@ class ToolInvoker:
             user_id=user_id or "",
             organization_id=organization_id or "",
             run_id=run_context.run_id if run_context else None,
-            approval_id=(approval_id_value if isinstance(approval_id_value, str) else None),
+            approval_id=approval_id,
             human_description=call.description,
         )
         outcome = await self._approval_coordinator.resolve(

@@ -6,8 +6,10 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
+from langgraph.func import task
 
+from agent_engine.engine.langgraph.checkpointing import CheckpointReplayMismatch, in_graph_run
 from agent_engine.engine.langgraph.execution.execution_context import (
     ExecutionContextRefresher,
 )
@@ -19,6 +21,7 @@ from agent_engine.runtime.execution_limiter import (
 )
 from agent_engine.runtime.streaming import current_streams
 from agent_engine.runtime.tool_results import NormalizedToolResult
+from agent_engine.tool_usage.models import stable_tool_call_id
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +58,44 @@ async def run_tool_loop(
     *,
     refresh_execution_context: ExecutionContextRefresher | None = None,
 ) -> Any:
-    """Drive model → tools → model until the model stops calling tools."""
+    """Drive model → tools → model, restoring completed steps on HITL replay.
+
+    Model outputs determine the interrupt order and must never be regenerated.
+    ToolInvoker checkpoints leaf outcomes after registering execution limits.
+    Orchestrator delegations rebuild their route locally and rely on the child's
+    checkpointed model/tool steps instead. Restored outputs must match this node
+    and its original input, even if route filtering changes the replay order.
+    """
+    checkpointed = in_graph_run()
+    step_key = stable_tool_call_id(
+        node_path,
+        [
+            {"type": message.type, "content": message.content}
+            for message in context.messages
+            if not isinstance(message, SystemMessage)
+        ],
+    )
+
+    @task
+    async def model_step(turn: int) -> tuple[str, int, Any]:
+        await _refresh(context, refresh_execution_context)
+        return step_key, turn, await invoke_model(model, context.messages)
+
+    model_turn = 0
+
+    async def next_response() -> Any:
+        nonlocal model_turn
+        if checkpointed:
+            restored_key, restored_turn, response = await model_step(model_turn)
+            if (restored_key, restored_turn) != (step_key, model_turn):
+                raise CheckpointReplayMismatch(node_path)
+            model_turn += 1
+            return response
+        await _refresh(context, refresh_execution_context)
+        return await invoke_model(model, context.messages)
+
     limiter = current_execution.get()
-    await _refresh(context, refresh_execution_context)
-    response = await invoke_model(model, context.messages)
+    response = await next_response()
     while getattr(response, "tool_calls", None):
         if limiter is not None:
             try:
@@ -95,8 +132,7 @@ async def run_tool_loop(
                     name=tool_call["name"],
                 )
             )
-        await _refresh(context, refresh_execution_context)
-        response = await invoke_model(model, context.messages)
+        response = await next_response()
     return response
 
 

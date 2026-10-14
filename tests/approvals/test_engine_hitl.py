@@ -336,7 +336,8 @@ async def test_allow_once_resumes_same_run_and_executes_once(tmp_path: Path) -> 
     assert "sent: go" in resumed.answer
     assert _executions(counter) == 1  # executed exactly once
     assert resumed.visited == ["writer"]  # same run, agent not re-selected as a new route
-    assert (resumed.input_tokens, resumed.output_tokens) == (6, 3)
+    # The reviewed model response is restored, so only the post-tool turn adds usage.
+    assert (resumed.input_tokens, resumed.output_tokens) == (4, 2)
     assert recovered == resumed
 
 

@@ -4,7 +4,7 @@ The coordinator wires the policy, the session store, and the approval provider
 together. It contains no tool-specific logic and performs no UI interaction (the
 injected provider owns that). Its single entry point is :meth:`resolve`:
 
-1. Ask the policy whether approval is required (auto mode → session → ask).
+1. Honor a claimed pending approval; otherwise ask policy (auto mode → session → ask).
 2. If not required, permit execution immediately (the provider is never called).
 3. Otherwise request a typed decision from the provider.
 4. Apply the decision: store a session permission only for ``ALLOW_FOR_SESSION``
@@ -76,7 +76,9 @@ class ApprovalCoordinator:
 
     async def resolve(self, invocation: ToolInvocation, *, auto_mode: bool) -> ApprovalOutcome:
         query = await self._build_query(invocation, auto_mode=auto_mode)
-        required = self._policy.requires_approval(query)
+        # A claimed decision governs this pending invocation even if auto mode
+        # or a session grant changed while the human was reviewing it.
+        required = invocation.approval_id is not None or self._policy.requires_approval(query)
         self._log_evaluated(query, required=required)
 
         if not required:

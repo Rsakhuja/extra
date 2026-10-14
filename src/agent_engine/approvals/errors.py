@@ -46,6 +46,14 @@ class ApprovalAlreadyProcessed(ApprovalError):
         super().__init__(f"approval {approval_id} already processed (status={status})")
 
 
+class ApprovalInvocationMismatch(ApprovalError):
+    """A resumed decision does not bind to the invocation at the tool gate."""
+
+    def __init__(self, approval_id: str) -> None:
+        self.approval_id = approval_id
+        super().__init__(f"approval {approval_id} does not match the pending invocation")
+
+
 class UnauthorizedApprover(ApprovalError):
     def __init__(self, approval_id: str) -> None:
         self.approval_id = approval_id

@@ -85,6 +85,7 @@ class ToolInvocation:
     organization_id: str = ""
     run_id: str | None = None
     approval_id: str | None = None
+    """A claimed approval for this invocation; its decision overrides broad grants."""
     human_description: str = ""
 
     @property

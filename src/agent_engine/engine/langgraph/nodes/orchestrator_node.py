@@ -13,7 +13,9 @@ from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.errors import GraphInterrupt
 from pydantic import BaseModel
 
+from agent_engine.approvals.errors import ApprovalInvocationMismatch
 from agent_engine.core.spec import OrchestratorSpec
+from agent_engine.engine.langgraph.checkpointing import CheckpointReplayMismatch
 from agent_engine.engine.langgraph.execution.execution_context import (
     current_usage_scope,
     execution_context_refresher,
@@ -178,11 +180,11 @@ class OrchestratorNode(NodeExecutor):
             sink_token = current_streams.set(child_sinks)
             try:
                 result = await entry.node.execute(sub_state)
-            except GraphInterrupt:
+            except (GraphInterrupt, ApprovalInvocationMismatch, CheckpointReplayMismatch):
                 # An approval interrupt raised inside a nested child must bubble up
                 # to the LangGraph runtime so the checkpoint is taken — it is
-                # control flow, not a child failure. Never swallow it, and record
-                # nothing: the invocation has not reached an outcome yet.
+                # control flow, not a child failure. Replay/consent mismatches
+                # also abort the run instead of becoming model-facing tool text.
                 raise
             except Exception as exc:
                 await self._usage.record_failure(identity, error=str(exc))

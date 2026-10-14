@@ -77,7 +77,31 @@ During a model tool loop, the tool-call message and matching tool result remain
 structured and ordered for the provider. A run paused for tool
 approval stores its continuation in the LangGraph checkpoint keyed by `run_id`;
 session-wide approval grants live in a separate approval repository keyed by
-session and tool identity. Normal stream completion does not cancel a suspended
+session and tool identity. Model responses and completed leaf-tool outcomes are
+checkpointed as individual steps, so resume restores the reviewed tool request
+and reuses earlier results instead of regenerating calls or repeating side
+effects. This also applies to nested agents and sequential approvals. Resumed
+decisions carry the approval id and stable invocation id, which covers the run,
+agent path, provider/server, tool name, and raw arguments without the provider's
+transient call id. The tool approval gate rejects missing or mismatched bindings
+before execution; the displayed and persisted approval arguments stay masked.
+The claimed decision also overrides any auto-mode or session-grant change while
+the invocation waited. Its binding is request-local and consumed only at the
+matching interrupt; later calls return to normal policy evaluation.
+Completing a replay with that binding still unconsumed is a mismatch: for
+example, a rebuilt graph cannot silently remove the reviewed tool and report its
+approval as applied.
+Restored steps also validate the node/input or invocation identity, so a changed
+route cannot reuse another agent's positional checkpoint. A mismatch aborts the
+run, rejects its claimed approval, and removes any newly created pending approval.
+The graph state carries an internal continuation version. Resuming a suspended
+run created before these checkpointed substeps existed fails closed before model
+or tool execution, because replaying that older format could repeat side effects.
+Execution limits still account for restored calls before their cached outcomes
+are returned; checkpointing does not reset the run's allowed tool budget.
+Restored model steps emit no new answer deltas or token usage. The existing tool
+execution ledger still protects calls whose step started but did not finish.
+Normal stream completion does not cancel a suspended
 approval. An explicit owner cancellation atomically rejects the pending
 approval, transitions the run to terminal `CANCELLED`, and prevents later
 resume.
