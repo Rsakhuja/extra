@@ -17,6 +17,9 @@ from langgraph.types import interrupt
 from agent_engine.approvals.approval_manager import ApprovalManager
 from agent_engine.approvals.approval_provider import ApprovalProvider, ApprovalRequest
 from agent_engine.approvals.decision import ApprovalDecision, parse_decision
+from agent_engine.approvals.errors import ApprovalInvocationMismatch
+from agent_engine.approvals.models import ApprovalStatus
+from agent_engine.engine.langgraph.execution.approval_resume import current_approval_resume
 from agent_engine.logging_config import log
 from agent_engine.runtime.hooks import current_run_context
 
@@ -96,4 +99,29 @@ class InterruptApprovalProvider(ApprovalProvider):
             tool_call_id=inv.tool_call_id,
         )
         resume = interrupt(payload)
-        return parse_decision(resume, default=ApprovalDecision.DENY)
+        # The stable id covers the run, agent path, provider/server, tool, and
+        # raw arguments. Masked arguments cannot bind consent: distinct secrets
+        # have the same redacted display. Provider-generated call ids are absent.
+        if (
+            not isinstance(resume, dict)
+            or resume.get("approval_id") != record.approval_id
+            or resume.get("tool_call_id") != inv.tool_call_id
+        ):
+            # A changed invocation may have created a new pending row before the
+            # positional resume was consumed. It must not outlive this failure.
+            if record.status == ApprovalStatus.PENDING:
+                try:
+                    await self._approvals.cancel_pending(
+                        run_id=run_id,
+                        approval_id=record.approval_id,
+                        caller_user_id=authorized_user_id,
+                        caller_auth_ref=auth_ref,
+                    )
+                except Exception as exc:
+                    raise ApprovalInvocationMismatch(record.approval_id) from exc
+            raise ApprovalInvocationMismatch(record.approval_id)
+        decision = parse_decision(resume, default=ApprovalDecision.DENY)
+        binding = current_approval_resume.get()
+        if binding is not None:
+            binding.consume(record.approval_id, inv.tool_call_id)
+        return decision

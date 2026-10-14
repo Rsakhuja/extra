@@ -16,7 +16,7 @@ from langgraph.types import Command
 from agent_engine.approvals.approval_manager import ApprovalManager
 from agent_engine.approvals.coordinator import ApprovalCoordinator
 from agent_engine.approvals.decision import ApprovalDecision, parse_decision
-from agent_engine.approvals.errors import RunNotFound
+from agent_engine.approvals.errors import ApprovalInvocationMismatch, RunNotFound
 from agent_engine.approvals.in_memory_approval_repository import InMemoryApprovalRepository
 from agent_engine.approvals.in_memory_session_approval_repository import (
     InMemorySessionApprovalRepository,
@@ -24,7 +24,7 @@ from agent_engine.approvals.in_memory_session_approval_repository import (
 from agent_engine.approvals.in_memory_tool_execution_repository import (
     InMemoryToolExecutionRepository,
 )
-from agent_engine.approvals.models import ApprovalRecord, RunStatus
+from agent_engine.approvals.models import ApprovalRecord, ApprovalStatus, RunStatus
 from agent_engine.approvals.session_approval_repository import SessionApprovalRepository
 from agent_engine.approvals.session_approval_store import SessionApprovalStore
 from agent_engine.approvals.tool_execution_manager import ToolExecutionManager
@@ -35,6 +35,11 @@ from agent_engine.engine.langgraph.approval_provider import InterruptApprovalPro
 from agent_engine.engine.langgraph.checkpointing import (
     CheckpointerHandle,
     CheckpointProviderFactory,
+    CheckpointReplayMismatch,
+)
+from agent_engine.engine.langgraph.execution.approval_resume import (
+    ApprovalResume,
+    current_approval_resume,
 )
 from agent_engine.engine.langgraph.execution.run_lifecycle import RunLifecycle
 from agent_engine.engine.langgraph.execution.stream_channel import StreamChannel
@@ -83,6 +88,7 @@ from agent_engine.tool_usage.trace import as_usage_records
 from agent_engine.tool_usage.tracker import ToolUsageTracker
 
 logger = logging.getLogger(__name__)
+_CONTINUATION_VERSION = 1
 
 
 def _initial_state(
@@ -98,6 +104,7 @@ def _initial_state(
     of their own, so a plain ``run("hi")`` leaves the key absent for filters.
     """
     state: dict[str, Any] = {
+        "continuation_version": _CONTINUATION_VERSION,
         "message": message,
         "history": [
             {"role": history_message.role.value, "content": history_message.content}
@@ -374,7 +381,13 @@ class LangGraphEngine(Engine):
         return self._app, self._lifecycle
 
     @contextmanager
-    def _run_scope(self, ctx: RunContext, *, sinks: StreamSinks | None) -> Iterator[None]:
+    def _run_scope(
+        self,
+        ctx: RunContext,
+        *,
+        sinks: StreamSinks | None,
+        approval_resume: ApprovalResume | None = None,
+    ) -> Iterator[None]:
         """Publish the ambient per-run state for the duration of one run.
 
         Nodes, tools, and the MCP transport read the run context, the execution
@@ -388,6 +401,7 @@ class LangGraphEngine(Engine):
         that must not disturb the sinks its caller already installed.
         """
         ctx_token = current_run_context.set(ctx)
+        approval_token = current_approval_resume.set(approval_resume)
         exec_token = current_execution.set(ExecutionLimiter(self._policy))
         stream_token = None if sinks is None else current_streams.set(sinks)
         try:
@@ -403,6 +417,8 @@ class LangGraphEngine(Engine):
                 current_execution.reset(exec_token)
             with suppress(ValueError):
                 current_run_context.reset(ctx_token)
+            with suppress(ValueError):
+                current_approval_resume.reset(approval_token)
 
     async def _invoke_graph(
         self, app: RunGraph, ctx: RunContext, graph_input: Any
@@ -412,7 +428,36 @@ class LangGraphEngine(Engine):
         ``graph_input`` is the initial state of a new run, or the ``Command``
         that continues a suspended one from its checkpoint.
         """
-        return await app.ainvoke(graph_input, self._thread_config(ctx))
+        try:
+            if isinstance(graph_input, Command):
+                state = await app.aget_state(self._thread_config(ctx))
+                if state.values.get("continuation_version") != _CONTINUATION_VERSION:
+                    # Legacy runs may have already executed auto-approved tools,
+                    # but have no saved substeps. Never replay them to discover
+                    # the mismatch after another side effect has occurred.
+                    raise CheckpointReplayMismatch(f"run {ctx.run_id}")
+            return await app.ainvoke(graph_input, self._thread_config(ctx))
+        except (ApprovalInvocationMismatch, CheckpointReplayMismatch):
+            # Both invocation paths share this gate. A rejected replay must not
+            # strand the claimed approval in RESUMING or finalize it as allowed.
+            resume = graph_input.resume if isinstance(graph_input, Command) else None
+            approval_id = resume.get("approval_id") if isinstance(resume, dict) else None
+            if ctx.run_id is not None and isinstance(approval_id, str):
+                try:
+                    approval = await self._approval_manager.get_approval(ctx.run_id, approval_id)
+                    if approval.status == ApprovalStatus.RESUMING:
+                        await self._approval_manager.finalize(approval_id, approved=False)
+                except Exception as cleanup_exc:
+                    # Keep the replay failure as the reported cause.
+                    log(
+                        logger,
+                        logging.WARNING,
+                        "claimed approval cleanup failed",
+                        run_id=ctx.run_id,
+                        approval_id=approval_id,
+                        error=type(cleanup_exc).__name__,
+                    )
+            raise
 
     async def _completed_result(
         self,
@@ -611,7 +656,7 @@ class LangGraphEngine(Engine):
         """
         app, lifecycle = self._require_built("resuming")
         kind = parse_decision(decision)
-        ctx = await self._activate_approval_resume(
+        ctx, approval = await self._activate_approval_resume(
             lifecycle,
             run_id=run_id,
             approval_id=approval_id,
@@ -629,9 +674,19 @@ class LangGraphEngine(Engine):
             decision=kind.value,
         )
         tokens = TokenUsage()
-        with self._run_scope(ctx, sinks=StreamSinks(token=tokens.add)):
+        with self._run_scope(
+            ctx,
+            sinks=StreamSinks(token=tokens.add),
+            approval_resume=ApprovalResume(approval.approval_id, approval.tool_call_id),
+        ):
             try:
-                resume_command: Command[Any] = Command(resume={"decision": kind.value})
+                resume_command: Command[Any] = Command(
+                    resume={
+                        "decision": kind.value,
+                        "approval_id": approval.approval_id,
+                        "tool_call_id": approval.tool_call_id,
+                    }
+                )
                 result = await self._invoke_graph(app, ctx, resume_command)
                 token_usage = await self._record_token_usage(ctx, tokens)
                 await self._approval_manager.finalize(approval_id, approved=approved)
@@ -671,7 +726,7 @@ class LangGraphEngine(Engine):
         """Resume one approval through the same owned stream used by new runs."""
         app, lifecycle = self._require_built("streaming an approval resume")
         kind = parse_decision(decision)
-        ctx = await self._activate_approval_resume(
+        ctx, approval = await self._activate_approval_resume(
             lifecycle,
             run_id=run_id,
             approval_id=approval_id,
@@ -692,7 +747,13 @@ class LangGraphEngine(Engine):
             approval_id=approval_id,
             decision=kind.value,
         )
-        command: Command[Any] = Command(resume={"decision": kind.value})
+        command: Command[Any] = Command(
+            resume={
+                "decision": kind.value,
+                "approval_id": approval.approval_id,
+                "tool_call_id": approval.tool_call_id,
+            }
+        )
         execution = cast(
             AsyncGenerator[RunStreamEvent, None],
             self._stream_execution(
@@ -702,6 +763,7 @@ class LangGraphEngine(Engine):
                 command,
                 after_invoke=finalize_approval,
                 started_event=RunStreamEvent(type="resume_started", run_id=run_id),
+                approval_resume=ApprovalResume(approval.approval_id, approval.tool_call_id),
             ),
         )
         try:
@@ -719,7 +781,7 @@ class LangGraphEngine(Engine):
         caller_user_id: str | None,
         caller_session_id: str | None,
         access_token: str | None = None,
-    ) -> RunContext:
+    ) -> tuple[RunContext, ApprovalRecord]:
         """Claim and activate one resume without an interruptible ownership gap.
 
         The response may be cancelled before its first SSE frame. Shielding this
@@ -728,7 +790,7 @@ class LangGraphEngine(Engine):
         approval stranded before graph-task ownership begins.
         """
 
-        async def activate() -> RunContext:
+        async def activate() -> tuple[RunContext, ApprovalRecord]:
             approval = await self._approval_manager.claim(
                 run_id=run_id,
                 approval_id=approval_id,
@@ -750,14 +812,14 @@ class LangGraphEngine(Engine):
                 ),
             )
             await lifecycle.activate_resume(ctx)
-            return ctx
+            return ctx, approval
 
         activation = asyncio.create_task(activate())
         try:
             return await asyncio.shield(activation)
         except asyncio.CancelledError:
             try:
-                ctx = await asyncio.shield(activation)
+                ctx, _ = await asyncio.shield(activation)
             except Exception:
                 # The claim lost or activation failed, so there is no active
                 # execution owned by this request to terminally cancel.
@@ -827,11 +889,14 @@ class LangGraphEngine(Engine):
         *,
         after_invoke: Callable[[], Awaitable[None]] | None = None,
         started_event: RunStreamEvent | None = None,
+        approval_resume: ApprovalResume | None = None,
     ) -> AsyncIterator[RunStreamEvent]:
         """Own one active graph leg and cancel it when its consumer leaves."""
         channel = StreamChannel()
         tokens = TokenUsage()
-        with self._run_scope(ctx, sinks=channel.sinks(token=tokens.add)):
+        with self._run_scope(
+            ctx, sinks=channel.sinks(token=tokens.add), approval_resume=approval_resume
+        ):
             task = asyncio.create_task(
                 self._stream_graph(
                     app,

@@ -8,6 +8,7 @@ and the real in-memory session store.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
@@ -84,6 +85,27 @@ def _inv(
         server_id=server_id,
         arguments=arguments or {},
     )
+
+
+@pytest.mark.parametrize("auto_mode", [False, True])
+async def test_claimed_approval_overrides_session_and_auto_bypasses(auto_mode: bool) -> None:
+    provider = RecordingProvider(ApprovalDecision.DENY)
+    store = InMemorySessionApprovalStore()
+    invocation = _inv()
+    assert invocation.session_key is not None
+    await store.allow(invocation.session_key)
+    coordinator = ApprovalCoordinator(provider, session_store=store)
+
+    result = await coordinator.resolve(
+        replace(invocation, approval_id="claimed"), auto_mode=auto_mode
+    )
+    assert result.execute is False
+    assert result.decision == ApprovalDecision.DENY
+    assert len(provider.requests) == 1
+
+    fresh = await coordinator.resolve(_inv(tool_call_id="fresh"), auto_mode=auto_mode)
+    assert fresh.execute is True
+    assert len(provider.requests) == 1
 
 
 # ------------------------------- standard --------------------------------- #

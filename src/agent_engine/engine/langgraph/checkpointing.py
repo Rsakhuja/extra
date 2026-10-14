@@ -13,6 +13,7 @@ from dataclasses import dataclass
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.runtime import get_runtime
 
 from agent_engine.logging_config import log
 
@@ -21,6 +22,21 @@ logger = logging.getLogger(__name__)
 
 class CheckpointConfigError(RuntimeError):
     """A checkpoint connection string was supplied but its backend is unusable."""
+
+
+class CheckpointReplayMismatch(RuntimeError):
+    """A positional checkpoint belongs to a different model/tool invocation."""
+
+    def __init__(self, node_path: str) -> None:
+        super().__init__(f"checkpoint replay does not match the invocation at {node_path}")
+
+
+def in_graph_run() -> bool:
+    """Distinguish a LangGraph runtime from an ordinary LangChain Runnable."""
+    try:
+        return get_runtime() is not None
+    except RuntimeError:
+        return False
 
 
 @dataclass(frozen=True)

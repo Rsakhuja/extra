@@ -19,6 +19,9 @@ class GraphState(TypedDict, total=False):
     ``ToolUsageRepository``, keyed by run, not graph-state propagation.
     """
 
+    continuation_version: int
+    """Internal replay format; older suspended runs must fail closed on resume."""
+
     message: str
     """The user's incoming message."""
 
