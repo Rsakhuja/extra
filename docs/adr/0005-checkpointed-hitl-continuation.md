@@ -41,8 +41,10 @@ one invocation.
   first unfinished tool step validates that binding before policy evaluation;
   its existing `ToolInvocation.approval_id` marks the claimed decision as
   authoritative over auto mode or session grants. The matching interrupt consumes
-  the binding once, so later calls still follow normal policy. Separate requests
-  never share this state, and completed steps do not consume a new decision.
+  the binding once, so later calls still follow normal policy. A replay that
+  completes without consuming it fails closed, covering rebuilt graphs that
+  remove or block the pending invocation. Separate requests never share this
+  state, and completed steps do not consume a new decision.
 - Approval cleanup is best effort. Repository failures are chained or logged
   by type and cannot replace the original replay/consent mismatch.
 - Graph state carries `continuation_version`. Resuming a checkpoint without the

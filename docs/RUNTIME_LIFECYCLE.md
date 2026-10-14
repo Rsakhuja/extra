@@ -88,6 +88,9 @@ before execution; the displayed and persisted approval arguments stay masked.
 The claimed decision also overrides any auto-mode or session-grant change while
 the invocation waited. Its binding is request-local and consumed only at the
 matching interrupt; later calls return to normal policy evaluation.
+Completing a replay with that binding still unconsumed is a mismatch: for
+example, a rebuilt graph cannot silently remove the reviewed tool and report its
+approval as applied.
 Restored steps also validate the node/input or invocation identity, so a changed
 route cannot reuse another agent's positional checkpoint. A mismatch aborts the
 run, rejects its claimed approval, and removes any newly created pending approval.

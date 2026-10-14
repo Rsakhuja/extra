@@ -233,7 +233,9 @@ one pending invocation. A grant added by another run, or an auto-mode change
 after rebuilding the engine, cannot bypass a pending denial. A request-local
 binding validates the first unfinished tool step before policy evaluation and
 is consumed only by the matching approval interrupt. Later calls use the normal
-policy; completed steps are restored without consuming this new decision.
+policy; completed steps are restored without consuming this new decision. If a
+rebuilt graph removes or blocks the pending invocation before it reaches that
+interrupt, the unconsumed binding fails the run and rejects the claimed approval.
 
 An unrecognized or missing resume decision **fails closed to `DENY`**, so an
 ambiguous resume never triggers a side effect.

@@ -436,7 +436,14 @@ class LangGraphEngine(Engine):
                     # but have no saved substeps. Never replay them to discover
                     # the mismatch after another side effect has occurred.
                     raise CheckpointReplayMismatch(f"run {ctx.run_id}")
-            return await app.ainvoke(graph_input, self._thread_config(ctx))
+            result = await app.ainvoke(graph_input, self._thread_config(ctx))
+            binding = current_approval_resume.get()
+            if binding is not None:
+                # A rebuilt graph can remove or block the reviewed tool before
+                # it reaches the approval gate. Never report that decision as
+                # applied unless the exact pending invocation consumed it.
+                binding.ensure_consumed()
+            return result
         except (ApprovalInvocationMismatch, CheckpointReplayMismatch):
             # Both invocation paths share this gate. A rejected replay must not
             # strand the claimed approval in RESUMING or finalize it as allowed.

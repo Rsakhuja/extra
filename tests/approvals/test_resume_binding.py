@@ -509,6 +509,55 @@ async def test_binding_failure_rejects_the_approval_and_aborts_the_run(
 
 
 @pytest.mark.parametrize("resumed_stream", [False, True])
+async def test_removed_pending_tool_cannot_complete_without_consuming_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, resumed_stream: bool
+) -> None:
+    from agent_engine.engine.langgraph.checkpointing import CheckpointProviderFactory
+
+    handle = CheckpointProviderFactory().create(None)
+    monkeypatch.setattr(CheckpointProviderFactory, "create", lambda *a, **k: handle)
+    output = tmp_path / "executed.log"
+    write_tool(tmp_path, "send_email", output)
+    spec = _multi_tool_spec("send_email")
+    manager = ApprovalManager(
+        run_repository=InMemoryRunRepository(), approval_repository=InMemoryApprovalRepository()
+    )
+
+    async with LangGraphEngine(
+        tmp_path,
+        model_factory=lambda *a, **k: cast(BaseChatModel, FakeChatModel()),
+        approval_manager=manager,
+    ) as first_engine:
+        await first_engine.build(spec)
+        first = await first_engine.run("review", context=RunContext(run_id="removed"))
+        assert first.pending_approval is not None
+
+    assert isinstance(spec.graph.node, AgentSpec)
+    without_tool = replace(spec, graph=replace(spec.graph, node=replace(spec.graph.node, tools=())))
+    async with LangGraphEngine(
+        tmp_path,
+        model_factory=lambda *a, **k: cast(BaseChatModel, FakeChatModel()),
+        approval_manager=manager,
+    ) as second_engine:
+        await second_engine.build(without_tool)
+        approval_id = first.pending_approval.approval_id
+        with pytest.raises(ApprovalInvocationMismatch):
+            if resumed_stream:
+                _ = [
+                    event
+                    async for event in second_engine.resume_stream(
+                        "removed", approval_id, "allow once"
+                    )
+                ]
+            else:
+                await second_engine.resume("removed", approval_id, "allow once")
+        assert await second_engine.get_run_status("removed") == "failed"
+        record = await manager.get_approval("removed", approval_id)
+        assert record.status == ApprovalStatus.REJECTED
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("resumed_stream", [False, True])
 async def test_legacy_continuation_is_rejected_before_any_replayed_side_effect(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, resumed_stream: bool
 ) -> None:

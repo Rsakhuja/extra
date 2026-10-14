@@ -33,6 +33,11 @@ class ApprovalResume:
                 raise ApprovalInvocationMismatch(self.approval_id)
             self.consumed = True
 
+    def ensure_consumed(self) -> None:
+        """Fail when replay completed without reaching the reviewed invocation."""
+        if not self.consumed:
+            raise ApprovalInvocationMismatch(self.approval_id)
+
 
 current_approval_resume: ContextVar[ApprovalResume | None] = ContextVar(
     "current_approval_resume", default=None
