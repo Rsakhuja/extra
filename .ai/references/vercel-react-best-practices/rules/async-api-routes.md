@@ -26,7 +26,11 @@ export async function GET(request: Request) {
 export async function GET(request: Request) {
   const sessionPromise = auth()
   const configPromise = fetchConfig()
+  // Mark the early start as handled: if auth fails or returns early, a later
+  // config rejection must not become an unhandled rejection.
+  configPromise.catch(() => {})
   const session = await sessionPromise
+  if (!session) return new Response('Unauthorized', { status: 401 })
   const [config, data] = await Promise.all([
     configPromise,
     fetchData(session.user.id)
@@ -34,5 +38,7 @@ export async function GET(request: Request) {
   return Response.json({ data, config })
 }
 ```
+
+Start work before authentication only when it is safe for an unauthenticated caller to trigger: cheap, free of side effects, and independent of the caller. Otherwise wait for authentication first.
 
 For operations with more complex dependency chains, use `better-all` to automatically maximize parallelism (see Dependency-Based Parallelization).

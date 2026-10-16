@@ -52,4 +52,4 @@ function useWindowEvent(event: string, handler: (e) => void) {
 }
 ```
 
-`useEffectEvent` provides a cleaner API for the same pattern: it creates a stable function reference that always calls the latest version of the handler.
+`useEffectEvent` provides a cleaner API for the same pattern. Its returned function is not stable: React returns a new one on every render, so keep it out of dependency arrays (see `advanced-effect-event-deps.md`). The subscription still works because the function registered by the effect, from whichever render, always runs the latest handler with the latest props and state.

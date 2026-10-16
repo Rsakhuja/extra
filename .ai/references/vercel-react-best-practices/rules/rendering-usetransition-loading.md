@@ -38,20 +38,24 @@ function SearchResults() {
 **Correct (useTransition with built-in pending state):**
 
 ```tsx
-import { useTransition, useState } from 'react'
+import { useRef, useTransition, useState } from 'react'
 
 function SearchResults() {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState([])
   const [isPending, startTransition] = useTransition()
+  const latestRequest = useRef(0)
 
   const handleSearch = (value: string) => {
     setQuery(value) // Update input immediately
-    
+    const request = ++latestRequest.current
+
     startTransition(async () => {
-      // Fetch and update results
       const data = await fetchResults(value)
-      setResults(data)
+      // A newer search may have started; never let an older response win.
+      if (request !== latestRequest.current) return
+      // Updates after an await must be wrapped again to stay in the transition.
+      startTransition(() => setResults(data))
     })
   }
 
@@ -70,6 +74,6 @@ function SearchResults() {
 - **Automatic pending state**: No need to manually manage `setIsLoading(true/false)`
 - **Error resilience**: Pending state correctly resets even if the transition throws
 - **Better responsiveness**: Keeps the UI responsive during updates
-- **Interrupt handling**: New transitions automatically cancel pending ones
+- **No cancellation**: A transition does not cancel an earlier request. Ignore stale responses, as above, or abort them with an `AbortController`
 
 Reference: [useTransition](https://react.dev/reference/react/useTransition)

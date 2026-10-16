@@ -16,7 +16,7 @@ function AnimationPlayer({ enabled, setEnabled }: { enabled: boolean; setEnabled
   const [frames, setFrames] = useState<Frame[] | null>(null)
 
   useEffect(() => {
-    if (enabled && !frames && typeof window !== 'undefined') {
+    if (enabled && !frames) {
       import('./animation-frames.js')
         .then(mod => setFrames(mod.frames))
         .catch(() => setEnabled(false))
@@ -28,4 +28,4 @@ function AnimationPlayer({ enabled, setEnabled }: { enabled: boolean; setEnabled
 }
 ```
 
-The `typeof window !== 'undefined'` check prevents bundling this module for SSR, optimizing server bundle size and build speed.
+The dynamic `import()` lets the bundler place the frames in a separate chunk that the browser downloads only when the feature is enabled. Effects never run during server rendering, so no `typeof window` check is needed here. Such a check also would not keep the chunk out of a server build; bundling is decided by the `import()` itself and the bundler configuration.

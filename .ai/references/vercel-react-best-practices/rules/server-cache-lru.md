@@ -19,12 +19,14 @@ const cache = new LRUCache<string, any>({
   ttl: 5 * 60 * 1000  // 5 minutes
 })
 
-export async function getUser(id: string) {
-  const cached = cache.get(id)
+// Key by every input that changes the result, never by the record ID alone
+export async function getUser(tenantId: string, id: string) {
+  const key = `${tenantId}:${id}`
+  const cached = cache.get(key)
   if (cached) return cached
 
-  const user = await db.user.findUnique({ where: { id } })
-  cache.set(id, user)
+  const user = await db.user.findFirst({ where: { tenantId, id } })
+  cache.set(key, user)
   return user
 }
 
@@ -33,6 +35,8 @@ export async function getUser(id: string) {
 ```
 
 Use when sequential user actions hit multiple endpoints needing the same data within seconds.
+
+This cache is shared by every request in the process. Include the tenant and any other scope that changes the result in the key, and check the caller's authorization on every request before returning cached data; never cache the authorization decision or caller-specific views. Keep the TTL short, because permission and data changes take effect only when an entry expires.
 
 **With Vercel's [Fluid Compute](https://vercel.com/docs/fluid-compute):** LRU caching is especially effective because multiple concurrent requests can share the same function instance and cache. This means the cache persists across requests without needing external storage like Redis.
 

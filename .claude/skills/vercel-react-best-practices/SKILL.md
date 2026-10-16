@@ -98,5 +98,15 @@ rules, why the change helps, checks run, and any remaining performance limits.
 Adapted from [Vercel React Best Practices](https://github.com/vercel-labs/agent-skills/tree/063bee94c3f4df8453406c830b0a7df0f2860278/skills/react-best-practices),
 by Vercel Engineering, version 1.0.0, at commit
 `063bee94c3f4df8453406c830b0a7df0f2860278`. Upstream declares the MIT license
-in its `SKILL.md`. The 70 local rule files are unmodified copies from that
-revision; the entrypoint above supplies Extra's project context and commands.
+in its `SKILL.md`. The 70 local rule files are copies from that revision; the
+entrypoint above supplies Extra's project context and commands.
+
+Seven rules carry local correctness and security corrections from review:
+`rendering-usetransition-loading` (stale responses are ignored, since a
+transition does not cancel requests), `js-cache-function-results` (pure,
+bounded caches only), `bundle-conditional` (an effect guard does not affect
+bundling), `server-cache-lru` (scope-complete keys and per-request
+authorization), `rendering-hydration-no-flicker` (the class change is still a
+hydration mismatch), `async-api-routes` (handled early starts and an
+authentication exit), and `advanced-event-handler-refs` (Effect Events are not
+stable). Reapply them when updating from upstream.

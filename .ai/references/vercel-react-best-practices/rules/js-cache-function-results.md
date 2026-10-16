@@ -7,7 +7,7 @@ tags: javascript, cache, memoization, performance
 
 ## Cache Repeated Function Calls
 
-Use a module-level Map to cache function results when the same function is called repeatedly with the same inputs during render.
+Use a module-level Map to cache the results of a pure function that is called repeatedly with the same inputs during render. Cache only results that depend solely on the arguments, and bound the cache: a module-level Map lives as long as the page or server process, so unbounded inputs make it grow forever. Never cache user- or request-specific results in module scope on a server.
 
 **Incorrect (redundant computation):**
 
@@ -29,14 +29,20 @@ function ProjectList({ projects }: { projects: Project[] }) {
 **Correct (cached results):**
 
 ```typescript
-// Module-level cache
+// Module-level cache for a pure function, bounded by size
+const MAX_SLUGS = 1000
 const slugifyCache = new Map<string, string>()
 
 function cachedSlugify(text: string): string {
-  if (slugifyCache.has(text)) {
-    return slugifyCache.get(text)!
+  const cached = slugifyCache.get(text)
+  if (cached !== undefined) {
+    return cached
   }
   const result = slugify(text)
+  if (slugifyCache.size >= MAX_SLUGS) {
+    // Maps keep insertion order, so this evicts the oldest entry
+    slugifyCache.delete(slugifyCache.keys().next().value!)
+  }
   slugifyCache.set(text, result)
   return result
 }
@@ -55,7 +61,9 @@ function ProjectList({ projects }: { projects: Project[] }) {
 }
 ```
 
-**Simpler pattern for single-value functions:**
+**Single-value cache with explicit invalidation:**
+
+This result depends on browser state, not arguments, so it is correct only if every change to that state calls the invalidation function. If you cannot guarantee that, recompute instead.
 
 ```typescript
 let isLoggedInCache: boolean | null = null
