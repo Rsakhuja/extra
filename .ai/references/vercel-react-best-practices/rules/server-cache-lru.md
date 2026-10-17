@@ -21,8 +21,10 @@ const cache = new LRUCache<string, any>({
 
 // Not exported: only reachable after the caller is authorized
 async function loadUser(tenantId: string, id: string) {
-  // Key by every input that changes the result, never by the record ID alone
-  const key = `${tenantId}:${id}`
+  // Key by every input that changes the result, never by the record ID alone.
+  // Encode the parts unambiguously: with a plain separator, ("a:b", "c") and
+  // ("a", "b:c") would collide when an ID can contain the separator.
+  const key = JSON.stringify([tenantId, id])
   const cached = cache.get(key)
   if (cached) return cached
 

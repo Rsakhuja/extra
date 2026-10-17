@@ -96,15 +96,18 @@ by Vercel Engineering, version 1.0.0, at commit
 in its `SKILL.md`. The 70 local rule files are copies from that revision; the
 entrypoint above supplies Extra's project context and commands.
 
-Ten rules carry local correctness and security corrections from review:
+Eleven rules carry local correctness and security corrections from review:
 `rendering-usetransition-loading` (stale responses are ignored, since a
 transition does not cancel requests), `js-cache-function-results` (pure,
 bounded caches only), `bundle-conditional` and `bundle-preload` (a
 `typeof window` guard does not affect bundling), `server-cache-lru`
-(scope-complete keys, and authorization before any cached value is returned),
+(unambiguous scope-complete keys, and authorization before any cached value is
+returned),
 `rendering-hydration-no-flicker` (the class change is still a hydration
 mismatch), `async-api-routes` (handled early starts and an authentication
-exit), `advanced-event-handler-refs` (Effect Events are not stable),
+exit), `advanced-event-handler-refs` and `advanced-use-latest` (Effect Events
+are not stable),
 `js-cache-storage` (cookie caches are reset, and cookie changes raise no
 event), and `server-after-nonblocking` (work in `after()` is awaited, and
-session cookies are not logged). Reapply them when updating from upstream.
+session cookies are not logged). Trailing whitespace was also removed from the
+copied rules. Reapply these changes when updating from upstream.
