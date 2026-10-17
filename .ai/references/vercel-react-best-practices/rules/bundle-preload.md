@@ -13,10 +13,9 @@ Preload heavy bundles before they're needed to reduce perceived latency.
 
 ```tsx
 function EditorButton({ onClick }: { onClick: () => void }) {
+  // Event handlers only run in the browser
   const preload = () => {
-    if (typeof window !== 'undefined') {
-      void import('./monaco-editor')
-    }
+    void import('./monaco-editor')
   }
 
   return (
@@ -36,7 +35,7 @@ function EditorButton({ onClick }: { onClick: () => void }) {
 ```tsx
 function FlagsProvider({ children, flags }: Props) {
   useEffect(() => {
-    if (flags.editorEnabled && typeof window !== 'undefined') {
+    if (flags.editorEnabled) {
       void import('./monaco-editor').then(mod => mod.init())
     }
   }, [flags.editorEnabled])
@@ -47,4 +46,4 @@ function FlagsProvider({ children, flags }: Props) {
 }
 ```
 
-The `typeof window !== 'undefined'` check prevents bundling preloaded modules for SSR, optimizing server bundle size and build speed.
+Event handlers and effects never run during server rendering, so neither example needs a `typeof window` check. Such a check would not keep the module out of a server build either: the dynamic `import()` and the bundler configuration decide chunking (see `bundle-conditional.md`).

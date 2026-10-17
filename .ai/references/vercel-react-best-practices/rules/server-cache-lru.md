@@ -19,8 +19,9 @@ const cache = new LRUCache<string, any>({
   ttl: 5 * 60 * 1000  // 5 minutes
 })
 
-// Key by every input that changes the result, never by the record ID alone
-export async function getUser(tenantId: string, id: string) {
+// Not exported: only reachable after the caller is authorized
+async function loadUser(tenantId: string, id: string) {
+  // Key by every input that changes the result, never by the record ID alone
   const key = `${tenantId}:${id}`
   const cached = cache.get(key)
   if (cached) return cached
@@ -30,13 +31,22 @@ export async function getUser(tenantId: string, id: string) {
   return user
 }
 
-// Request 1: DB query, result cached
-// Request 2: cache hit, no DB query
+export async function getUser(caller: Caller, id: string) {
+  // Authorize on every request, before any cached data can be returned
+  if (!(await canReadUser(caller, id))) {
+    throw new ForbiddenError()
+  }
+  // The tenant comes from the authenticated caller, never from request input
+  return loadUser(caller.tenantId, id)
+}
+
+// Request 1: authorized, DB query, result cached
+// Request 2: authorized again, cache hit, no DB query
 ```
 
 Use when sequential user actions hit multiple endpoints needing the same data within seconds.
 
-This cache is shared by every request in the process. Include the tenant and any other scope that changes the result in the key, and check the caller's authorization on every request before returning cached data; never cache the authorization decision or caller-specific views. Keep the TTL short, because permission and data changes take effect only when an entry expires.
+This cache is shared by every request in the process, so only the unexported loader touches it and every exported entry point authorizes the caller first. Cache only data that is identical for every caller allowed to see it, and never cache the authorization decision or caller-specific views. Keep the TTL short, because permission and data changes take effect only when an entry expires.
 
 **With Vercel's [Fluid Compute](https://vercel.com/docs/fluid-compute):** LRU caching is especially effective because multiple concurrent requests can share the same function instance and cache. This means the cache persists across requests without needing external storage like Redis.
 

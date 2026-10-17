@@ -33,7 +33,7 @@ export async function POST(request: Request) {
 
 ```tsx
 import { after } from 'next/server'
-import { headers, cookies } from 'next/headers'
+import { headers } from 'next/headers'
 import { logUserAction } from '@/app/utils'
 
 export async function POST(request: Request) {
@@ -43,9 +43,10 @@ export async function POST(request: Request) {
   // Log after response is sent
   after(async () => {
     const userAgent = (await headers()).get('user-agent') || 'unknown'
-    const sessionCookie = (await cookies()).get('session-id')?.value || 'anonymous'
-    
-    logUserAction({ sessionCookie, userAgent })
+
+    // Await the work: after() keeps it alive only until this callback settles.
+    // Never log session cookies or tokens; they are credentials.
+    await logUserAction({ userAgent })
   })
   
   return new Response(JSON.stringify({ status: 'success' }), {
@@ -69,5 +70,7 @@ The response is sent immediately while logging happens in the background.
 
 - `after()` runs even if the response fails or redirects
 - Works in Server Actions, Route Handlers, and Server Components
+- Await or return every promise in the callback; work that is merely started can be cut off when the callback resolves
+- Work in `after()` is lost if the process stops first. Write audit records that must never be lost durably before responding
 
 Reference: [https://nextjs.org/docs/app/api-reference/functions/after](https://nextjs.org/docs/app/api-reference/functions/after)
